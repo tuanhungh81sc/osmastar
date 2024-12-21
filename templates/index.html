@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Tìm kiếm đường đi bằng A*</title>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+      #map {
+        height: 90vh;
+        width: 100%;
+      }
+      .controls {
+        padding: 10px;
+        background: white;
+        border: 1px solid #ccc;
+      }
+      .marker-icon {
+        background-size: contain;
+        width: 20px !important;
+        height: 20px !important;
+        margin-left: -10px !important;
+        margin-top: -10px !important;
+      }
+      .start-marker {
+        background-color: #00ff00;
+        border: 2px solid white;
+        border-radius: 50%;
+      }
+      .end-marker {
+        background-color: #ff0000;
+        border: 2px solid white;
+        border-radius: 50%;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="controls">
+      <button onclick="setStart()">Đặt điểm xuất phát</button>
+      <button onclick="setEnd()">Đặt điểm đích</button>
+      <button onclick="findPath()">Tìm đường</button>
+      <button onclick="clearMap()">Xóa</button>
+      <span id="status"></span>
+    </div>
+    <div id="map"></div>
+
+    <script>
+      // Khởi tạo bản đồ
+      var map = L.map("map").setView([21.0285, 105.8542], 14);
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        attribution: "© OpenStreetMap contributors",
+      }).addTo(map);
+
+      var startMarker = null;
+      var endMarker = null;
+      var pathLayer = null;
+      var exploredLayer = null;
+      var mode = null;
+
+      // Tạo custom icons
+      var startIcon = L.divIcon({
+        className: "marker-icon start-marker",
+        iconSize: [20, 20],
+        iconAnchor: [10, 10],
+      });
+
+      var endIcon = L.divIcon({
+        className: "marker-icon end-marker",
+        iconSize: [20, 20],
+        iconAnchor: [10, 10],
+      });
+
+      function setStart() {
+        mode = "start";
+        document.getElementById("status").textContent =
+          "Click trên bản đồ để đặt điểm xuất phát";
+      }
+
+      function setEnd() {
+        mode = "end";
+        document.getElementById("status").textContent =
+          "Click trên bản đồ để đặt điểm đích";
+      }
+
+      function clearMap() {
+        if (startMarker) map.removeLayer(startMarker);
+        if (endMarker) map.removeLayer(endMarker);
+        if (pathLayer) map.removeLayer(pathLayer);
+        if (exploredLayer) map.removeLayer(exploredLayer);
+        startMarker = endMarker = pathLayer = exploredLayer = null;
+        mode = null;
+        document.getElementById("status").textContent = "";
+        location.reload(true);
+      }
+
+      // Xử lý sự kiện click trên bản đồ
+      function onMapClick(e) {
+        if (mode === "start") {
+          if (startMarker) map.removeLayer(startMarker);
+          startMarker = L.marker(e.latlng, { icon: startIcon }).addTo(map);
+          mode = null;
+          document.getElementById("status").textContent =
+            "Đã đặt điểm xuất phát";
+        } else if (mode === "end") {
+          if (endMarker) map.removeLayer(endMarker);
+          endMarker = L.marker(e.latlng, { icon: endIcon }).addTo(map);
+          mode = null;
+          document.getElementById("status").textContent = "Đã đặt điểm đích";
+        }
+      }
+
+      map.on("click", onMapClick);
+
+      async function findPath() {
+        if (!startMarker || !endMarker) {
+          alert("Vui lòng đặt điểm xuất phát và điểm đích");
+          return;
+        }
+
+        // Xóa đường đi cũ
+        if (pathLayer) map.removeLayer(pathLayer);
+        if (exploredLayer) map.removeLayer(exploredLayer);
+
+        // Tạo layer group để chứa các điểm đã khám phá
+        var exploredPoints = L.layerGroup().addTo(map);
+        var currentPoints = L.layerGroup().addTo(map);
+
+        try {
+          // Gửi yêu cầu tìm đường
+          const response = await fetch("/find_path", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              start: [startMarker.getLatLng().lat, startMarker.getLatLng().lng],
+              end: [endMarker.getLatLng().lat, endMarker.getLatLng().lng],
+            }),
+          });
+
+          // Bắt đầu nhận các bước thực hiện
+          while (true) {
+            const stepResponse = await fetch("/get_next_step");
+            const stepData = await stepResponse.json();
+
+            if (stepData.status === "finished") break;
+
+            if (stepData.status === "exploring") {
+              // Xóa điểm đang xét cũ
+              currentPoints.clearLayers();
+
+              // Thêm điểm đã duyệt (màu xám nhạt)
+              L.circleMarker(stepData.points[0], {
+                radius: 2,
+                color: "#000066",
+                fillColor: "#000066",
+                fillOpacity: 0.5,
+              }).addTo(exploredPoints);
+
+              // Thêm điểm đang xét (màu xanh đậm)
+              L.circleMarker(stepData.points[1], {
+                radius: 4,
+                color: "#0000FF",
+                fillColor: "#0000FF",
+                fillOpacity: 0.8,
+              }).addTo(currentPoints);
+            } else if (stepData.status === "done") {
+              // Vẽ đường đi cuối cùng
+              pathLayer = L.polyline(stepData.points, {
+                color: "#FF0000",
+                weight: 4,
+                opacity: 1.0,
+              }).addTo(map);
+            }
+
+            await new Promise((resolve) => setTimeout(resolve, 50));
+          }
+        } catch (error) {
+          console.error("Error:", error);
+          alert("Có lỗi xảy ra khi tìm đường");
+        }
+      }
+    </script>
+  </body>
+</html>
